@@ -17,6 +17,7 @@ import { Configuration, OpenAIApi } from 'openai'
 import { u } from 'unist-builder'
 import { filter } from 'unist-util-filter'
 import { inspect } from 'util'
+import { GITHUB_TOKEN, GITHUB_URL } from '@/lib/config'
 
 dotenv.config()
 
@@ -70,7 +71,7 @@ export async function GET(req: NextRequest) {
         node.data?.estree?.body[0]?.type === 'ExportNamedDeclaration' &&
         node.data.estree.body[0].declaration?.type === 'VariableDeclaration' &&
         node.data.estree.body[0].declaration.declarations[0]?.id.type ===
-          'Identifier' &&
+        'Identifier' &&
         node.data.estree.body[0].declaration.declarations[0].id.name === 'meta'
       )
     })
@@ -83,7 +84,7 @@ export async function GET(req: NextRequest) {
       (metaExportNode.data?.estree?.body[0]?.type ===
         'ExportNamedDeclaration' &&
         metaExportNode.data.estree.body[0].declaration?.type ===
-          'VariableDeclaration' &&
+        'VariableDeclaration' &&
         metaExportNode.data.estree.body[0].declaration.declarations[0]?.id
           .type === 'Identifier' &&
         metaExportNode.data.estree.body[0].declaration.declarations[0].id
@@ -204,18 +205,15 @@ export async function GET(req: NextRequest) {
   }
 
   async function walk(dir: string, parentPath?: string): Promise<WalkEntry[]> {
-    const response = await axios.get(
-      `https://api.github.com/repos/vercel/next.js/contents/${dir}`,
-      {
-        headers: {
-          Accept: 'application/vnd.github.v3+json',
-          Authorization: `Bearer ${process.env.GITHUB_TOKEN}`,
-          'Cache-Control': 'no-cache',
-          Pragma: 'no-cache',
-          Expires: '0',
-        },
+    const response = await axios.get(`${GITHUB_URL}${dir}`, {
+      headers: {
+        "Accept": 'application/vnd.github.v3+json',
+        "Authorization": `Bearer ${GITHUB_TOKEN}`,
+        "Cache-Control": 'no-cache',
+        "Pragma": 'no-cache',
+        "Expires": '0',
       }
-    )
+    })
 
     const files: GithubFile[] = response.data
     const entries = await Promise.all(
@@ -255,7 +253,7 @@ export async function GET(req: NextRequest) {
       public source: string,
       public path: string,
       public parentPath?: string
-    ) {}
+    ) { }
 
     abstract load(): Promise<{
       checksum: string
@@ -464,7 +462,7 @@ export async function GET(req: NextRequest) {
               meta,
               parent_page_id: parentPage?.id,
             },
-            { onConflict: 'path' }
+            { onConflict: path }
           )
           .select()
           .limit(1)
@@ -498,20 +496,19 @@ export async function GET(req: NextRequest) {
 
             const [responseData] = embeddingResponse.data.data
 
-            const { error: insertPageSectionError, data: pageSection } =
-              await supabaseClient
-                .from('nods_page_section')
-                .insert({
-                  page_id: page.id,
-                  slug,
-                  heading,
-                  content,
-                  token_count: embeddingResponse.data.usage.total_tokens,
-                  embedding: responseData.embedding,
-                })
-                .select()
-                .limit(1)
-                .single()
+            const { error: insertPageSectionError } = await supabaseClient
+              .from('nods_page_section')
+              .insert({
+                page_id: page.id,
+                slug,
+                heading,
+                content,
+                token_count: embeddingResponse.data.usage.total_tokens,
+                embedding: responseData.embedding,
+              })
+              .select()
+              .limit(1)
+              .single()
 
             if (insertPageSectionError) {
               throw insertPageSectionError

@@ -1,3 +1,6 @@
+import { OPENAI_KEY, OPENAI_MODEL, GITHUB_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GITHUB_URL, ignoredDirectories, ignoredFiles } from './config';
+import type { GithubFile, WalkEntry, Section, ProcessedMdx, Meta } from './types';
+
 import axios from 'axios'
 import { join } from 'path'
 import { createClient } from '@supabase/supabase-js'
@@ -16,20 +19,14 @@ import { Configuration, OpenAIApi } from 'openai'
 import { u } from 'unist-builder'
 import { filter } from 'unist-util-filter'
 import { inspect } from 'util'
-import { GITHUB_TOKEN, GITHUB_URL } from './config'
 
 dotenv.config()
-
-type GithubFile = {
-    type: 'file' | 'dir'
-    name: string
-}
 
 /**
  * Extracts ES literals from an `estree` `ObjectExpression`
  * into a plain JavaScript object.
  */
-function getObjectFromExpression(node: ObjectExpression) {
+function getObjectFromExpression(node: ObjectExpression): Record<string, string | number | bigint | true | RegExp | undefined> {
     return node.properties.reduce<
         Record<string, string | number | bigint | true | RegExp | undefined>
     >((object, property) => {
@@ -37,10 +34,8 @@ function getObjectFromExpression(node: ObjectExpression) {
             return object
         }
 
-        const key =
-            (property.key.type === 'Identifier' && property.key.name) || undefined
-        const value =
-            (property.value.type === 'Literal' && property.value.value) || undefined
+        const key = (property.key.type === 'Identifier' && property.key.name) || undefined
+        const value = (property.value.type === 'Literal' && property.value.value) || undefined
 
         if (!key) {
             return object
@@ -64,8 +59,7 @@ function extractMetaExport(mdxTree: Root) {
             node.type === 'mdxjsEsm' &&
             node.data?.estree?.body[0]?.type === 'ExportNamedDeclaration' &&
             node.data.estree.body[0].declaration?.type === 'VariableDeclaration' &&
-            node.data.estree.body[0].declaration.declarations[0]?.id.type ===
-            'Identifier' &&
+            node.data.estree.body[0].declaration.declarations[0]?.id.type === 'Identifier' &&
             node.data.estree.body[0].declaration.declarations[0].id.name === 'meta'
         )
     })
@@ -76,14 +70,10 @@ function extractMetaExport(mdxTree: Root) {
 
     const objectExpression =
         (metaExportNode.data?.estree?.body[0]?.type === 'ExportNamedDeclaration' &&
-            metaExportNode.data.estree.body[0].declaration?.type ===
-            'VariableDeclaration' &&
-            metaExportNode.data.estree.body[0].declaration.declarations[0]?.id
-                .type === 'Identifier' &&
-            metaExportNode.data.estree.body[0].declaration.declarations[0].id.name ===
-            'meta' &&
-            metaExportNode.data.estree.body[0].declaration.declarations[0].init
-                ?.type === 'ObjectExpression' &&
+            metaExportNode.data.estree.body[0].declaration?.type === 'VariableDeclaration' &&
+            metaExportNode.data.estree.body[0].declaration.declarations[0]?.id.type === 'Identifier' &&
+            metaExportNode.data.estree.body[0].declaration.declarations[0].id.name === 'meta' &&
+            metaExportNode.data.estree.body[0].declaration.declarations[0].init?.type === 'ObjectExpression' &&
             metaExportNode.data.estree.body[0].declaration.declarations[0].init) ||
         undefined
 
@@ -115,20 +105,6 @@ function splitTreeBy(tree: Root, predicate: (node: Content) => boolean) {
     }, [])
 }
 
-type Meta = ReturnType<typeof extractMetaExport>
-
-type Section = {
-    content: string
-    heading?: string
-    slug?: string
-}
-
-type ProcessedMdx = {
-    checksum: string
-    meta: Meta
-    sections: Section[]
-}
-
 /**
  * Processes MDX content for search indexing.
  * It extracts metadata, strips it of all JSX,
@@ -138,25 +114,11 @@ function processMdxForSearch(content: string): ProcessedMdx {
     if (content) content = content.replace(/(title:\s*)<([^>]+)>/g, '$1$2')
 
     const checksum = createHash('sha256').update(content).digest('base64')
-    const mdxTree = fromMarkdown(content, {
-        extensions: [mdxjs()],
-        mdastExtensions: [mdxFromMarkdown()],
-    })
-
+    const mdxTree = fromMarkdown(content, { extensions: [mdxjs()], mdastExtensions: [mdxFromMarkdown()] })
     const meta = extractMetaExport(mdxTree)
 
     // Remove all MDX elements from markdown
-    const mdTree = filter(
-        mdxTree,
-        (node) =>
-            ![
-                'mdxjsEsm',
-                'mdxJsxFlowElement',
-                'mdxJsxTextElement',
-                'mdxFlowExpression',
-                'mdxTextExpression',
-            ].includes(node.type)
-    )
+    const mdTree = filter(mdxTree, (node) => !['mdxjsEsm', 'mdxJsxFlowElement', 'mdxJsxTextElement', 'mdxFlowExpression', 'mdxTextExpression'].includes(node.type))
 
     if (!mdTree) {
         return {
@@ -167,15 +129,11 @@ function processMdxForSearch(content: string): ProcessedMdx {
     }
 
     const sectionTrees = splitTreeBy(mdTree, (node) => node.type === 'heading')
-
     const slugger = new GithubSlugger()
 
     const sections = sectionTrees.map((tree) => {
         let [firstNode] = tree.children
-
-        const heading =
-            firstNode.type === 'heading' ? toString(firstNode) : undefined
-
+        const heading = firstNode.type === 'heading' ? toString(firstNode) : undefined
         const slug = heading ? slugger.slug(heading) : undefined
 
         return {
@@ -192,42 +150,36 @@ function processMdxForSearch(content: string): ProcessedMdx {
     }
 }
 
-type WalkEntry = {
-    path: string
-    parentPath?: string
-}
-
 async function walk(dir: string, parentPath?: string): Promise<WalkEntry[]> {
     const response = await axios.get(`${GITHUB_URL}${dir}`, { headers: { Accept: 'application/vnd.github.v3+json', Authorization: `Bearer ${GITHUB_TOKEN}` } })
-
 
     const files: GithubFile[] = response.data
 
     const entries = await Promise.all(
-        files.map(async (file) => {
-            const path = join(dir, file.name)
-            if (file.type === 'dir' && file.name === '03-pages') {
-                // Skip the "03-pages" subdirectory
-                return []
-            } else if (file.type === 'dir') {
-                return walk(path, parentPath)
-            } else if (file.type === 'file' && /\.mdx?$/.test(file.name)) {
-                return [
-                    {
-                        path: path,
-                        parentPath,
-                    },
-                ]
-            } else {
-                return []
-            }
-        })
-    )
+        files.map(
+            async (file) => {
+                const path = join(dir, file.name);
 
-    const flattenedFiles = entries.reduce(
-        (all, folderContents) => all.concat(folderContents),
-        []
-    )
+                const isDir = file.type === 'dir';
+                const isFile = file.type === 'file';
+                const isIgnoredDir = ignoredDirectories.includes(file.name) && file.type === 'dir';
+                const isIgnoredFile = ignoredFiles.includes(file.name) && file.type === 'file';
+                const isIgnored = isIgnoredDir || isIgnoredFile;
+                const hasMdxFileExtension = /\.mdx?$/.test(file.name) && file.type === 'file';
+
+                if (isDir && isIgnored || isFile && isIgnored) { 	// e.g. Skip the "03-pages" subdirectory
+                    return [];
+                } else if (isDir && !isIgnored) {
+                    return walk(path, parentPath);
+                } else if (isFile && !isIgnored && hasMdxFileExtension) {
+                    return [{ path: path, parentPath }];
+                } else {
+                    return [];
+                }
+            })
+    );
+
+    const flattenedFiles = entries.reduce((all, folderContents) => all.concat(folderContents), [])
     return flattenedFiles.sort((a, b) => a.path.localeCompare(b.path))
 }
 
@@ -259,13 +211,18 @@ class GithubEmbeddingSource extends BaseEmbeddingSource {
         public parentFilePath?: string
     ) {
         const path = filePath.replace(/^docs/, '').replace(/\.mdx?$/, '')
-        const parentPath = parentFilePath?.replace(/^docs/, '').replace(/\.mdx?$/, '')
+        const parentPath = parentFilePath
+            ?.replace(/^docs/, '')
+            .replace(/\.mdx?$/, '')
+
         super(source, path, parentPath)
     }
 
     async load() {
         const response = await axios.get(`${GITHUB_URL}${this.filePath}`)
+
         const contents = response.data
+
         const { checksum, meta, sections } = processMdxForSearch(contents)
 
         this.checksum = checksum
@@ -285,42 +242,20 @@ type EmbeddingSource = GithubEmbeddingSource
 async function generateEmbeddings() {
     const shouldRefresh = false
 
-    if (
-        !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-        !process.env.SUPABASE_SERVICE_ROLE_KEY ||
-        !process.env.OPENAI_KEY
-    ) {
-        return console.log(
-            'Environment variables NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and OPENAI_KEY are required: skipping embeddings generation'
-        )
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY || !OPENAI_KEY) {
+        return console.log('Environment variables NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and OPENAI_KEY are required: skipping embeddings generation')
     }
 
-    const supabaseClient = createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL,
-        process.env.SUPABASE_SERVICE_ROLE_KEY,
-        {
-            auth: {
-                persistSession: false,
-                autoRefreshToken: false,
-            },
-        }
-    )
+    const supabaseClient = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } })
 
     if (shouldRefresh) {
         console.log('Refresh flag set, deleting existing data...')
-        const { error: deletePageSectionError } = await supabaseClient
-            .from('nods_page_section')
-            .delete()
-        if (deletePageSectionError) {
-            throw deletePageSectionError
-        }
 
-        const { error: deletePageError } = await supabaseClient
-            .from('nods_page')
-            .delete()
-        if (deletePageError) {
-            throw deletePageError
-        }
+        const { error: deletePageSectionError } = await supabaseClient.from('nods_page_section').delete()
+        if (deletePageSectionError) { throw deletePageSectionError }
+
+        const { error: deletePageError } = await supabaseClient.from('nods_page').delete()
+        if (deletePageError) { throw deletePageError }
     } else {
         console.log('Checking which pages are new or have changed')
     }
@@ -333,10 +268,10 @@ async function generateEmbeddings() {
 
     console.log(`Discovered ${embeddingSources.length} pages`)
 
-    if (!shouldRefresh) {
-        console.log('Checking which pages are new or have changed')
-    } else {
+    if (shouldRefresh) {
         console.log('Refresh flag set, re-generating all pages')
+    } else {
+        console.log('Checking which pages are new or have changed')
     }
 
     for (const embeddingSource of embeddingSources) {
@@ -361,16 +296,12 @@ async function generateEmbeddings() {
 
             // We use checksum to determine if this page & its sections need to be regenerated
             if (!shouldRefresh && existingPage?.checksum === checksum) {
-                const existingParentPage = existingPage?.parentPage as unknown as Singular<
-                    typeof existingPage.parentPage
-                >
+                const existingParentPage = existingPage?.parentPage as unknown as Singular<typeof existingPage.parentPage>
 
                 // If parent page changed, update it
                 // @ts-ignore
                 if (existingParentPage?.path !== parentPath) {
-                    console.log(
-                        `[${path}] Parent page has changed. Updating to '${parentPath}'...`
-                    )
+                    console.log(`[${path}] Parent page has changed. Updating to '${parentPath}'...`)
                     const { error: fetchParentPageError, data: parentPage } =
                         await supabaseClient
                             .from('nods_page')
@@ -397,13 +328,9 @@ async function generateEmbeddings() {
 
             if (existingPage) {
                 if (!shouldRefresh) {
-                    console.log(
-                        `[${path}] Docs have changed, removing old page sections and their embeddings`
-                    )
+                    console.log(`[${path}] Docs have changed, removing old page sections and their embeddings`)
                 } else {
-                    console.log(
-                        `[${path}] Refresh flag set, removing old page sections and their embeddings`
-                    )
+                    console.log(`[${path}] Refresh flag set, removing old page sections and their embeddings`)
                 }
 
                 const { error: deletePageSectionError } = await supabaseClient
@@ -451,23 +378,16 @@ async function generateEmbeddings() {
                 throw upsertPageError
             }
 
-            console.log(
-                `[${path}] Adding ${sections.length} page sections (with embeddings)`
-            )
+            console.log(`[${path}] Adding ${sections.length} page sections (with embeddings)`)
+
             for (const { slug, heading, content } of sections) {
                 // OpenAI recommends replacing newlines with spaces for best results (specific to embeddings)
                 const input = content.replace(/\n/g, ' ')
 
                 try {
-                    const configuration = new Configuration({
-                        apiKey: process.env.OPENAI_KEY,
-                    })
+                    const configuration = new Configuration({ apiKey: OPENAI_KEY })
                     const openai = new OpenAIApi(configuration)
-
-                    const embeddingResponse = await openai.createEmbedding({
-                        model: 'text-embedding-ada-002',
-                        input,
-                    })
+                    const embeddingResponse = await openai.createEmbedding({ model: OPENAI_MODEL, input })
 
                     if (embeddingResponse.status !== 200) {
                         throw new Error(inspect(embeddingResponse.data, false, 2))
@@ -495,13 +415,7 @@ async function generateEmbeddings() {
                     }
                 } catch (err) {
                     // TODO: decide how to better handle failed embeddings
-                    console.error(
-                        `Failed to generate embeddings for '${path}' page section starting with '${input.slice(
-                            0,
-                            40
-                        )}...'`
-                    )
-
+                    console.error(`Failed to generate embeddings for '${path}' page section starting with '${input.slice(0, 40)}...'`)
                     throw err
                 }
             }
@@ -516,9 +430,7 @@ async function generateEmbeddings() {
                 throw updatePageError
             }
         } catch (err) {
-            console.error(
-                `Page '${path}' or one/multiple of its page sections failed to store properly. Page has been marked with null checksum to indicate that it needs to be re-generated.`
-            )
+            console.error(`Page '${path}' or one/multiple of its page sections failed to store properly. Page has been marked with null checksum to indicate that it needs to be re-generated.`)
             console.error(err)
         }
     }
